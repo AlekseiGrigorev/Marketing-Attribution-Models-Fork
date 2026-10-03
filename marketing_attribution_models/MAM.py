@@ -1567,20 +1567,20 @@ class MAM:
 
                 for channel in coa.columns:
                     s = len(coaux.iloc[line, :][coaux.iloc[line, :] != 0])
-                    if coa[channel][line] == 0:
+                    if coa.at[line, channel] == 0:
                         a = (
                             -(math.factorial(s) * math.factorial(n - s - 1))
                             / math.factorial(n)
                             * v[line]
                         )
-                        coa[channel][line] = a
+                        coa.loc[line, channel] = a
                     else:
                         b = (
                             (math.factorial(s - 1) * math.factorial(n - s))
                             / math.factorial(n)
                             * v[line]
                         )
-                        coa[channel][line] = b
+                        coa.loc[line, channel] = b
 
             results.append(list(coa.sum()))
 

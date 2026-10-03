@@ -1469,7 +1469,7 @@ class MAM:
         for channel in unique_channels:
             # pylint: disable=cell-var-from-loop
             df_temp[channel] = df_temp.combinations.apply(
-                lambda channels: any(channel in s for s in channels)
+                lambda channels: channel in channels
             )
 
         return df_temp

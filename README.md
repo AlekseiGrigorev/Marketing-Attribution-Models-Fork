@@ -113,7 +113,22 @@ In other words, the bigger a channel's removal effect, the larger their contribu
 - [ml-book/shapley](https://christophm.github.io/interpretable-ml-book/shapley.html)
 - [Overview of Attribution modeling in MCF](https://support.google.com/analytics/answer/1662518?hl=en)
 
-## 3. Importing the Class
+## 3. Requirements
+
+This version targets **Python 3.14** with the modern scientific stack:
+
+| Requirement | Version |
+| --- | --- |
+| Python | `>=3.14` |
+| numpy | `>=2.5` |
+| pandas | `>=3.0` |
+| matplotlib | `>=3.11` |
+| seaborn | `>=0.13.2` |
+
+Earlier Python releases are not supported by this version.
+
+## 4. Importing the Class
+
 ```python
 >> pip install marketing_attribution_models
 ```
@@ -121,7 +136,14 @@ In other words, the bigger a channel's removal effect, the larger their contribu
 from marketing_attribution_models import MAM
 ```
 
-## 4. Demonstration
+To work on the library itself, install it in editable mode with the dev extras:
+
+```python
+>> pip install -e ".[dev]"
+>> pytest
+```
+
+## 5. Demonstration
 ### Creation of the MAM Object
 When **creating a MAM Object** two Data Frame **templates** can be used as input depending on what is the value of the parameter *group_channels*. 
 

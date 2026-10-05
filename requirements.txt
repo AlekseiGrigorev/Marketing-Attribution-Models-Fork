@@ -1,5 +1,5 @@
- # requirements.txt
- #
- # installs dependencies from ./setup.py, and the package itself,
- # in editable mode
- -e .
+# requirements.txt
+#
+# installs the package from ./pyproject.toml, in editable mode,
+# together with its runtime dependencies
+pip install -e ".[dev]"

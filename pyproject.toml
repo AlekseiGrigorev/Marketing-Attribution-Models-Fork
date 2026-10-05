@@ -1,7 +1,47 @@
-[tool.semantic_release]
-branch = 'master'
-version_variable = [
-  'setup.py:__version__'
+[build-system]
+requires = ["setuptools>=77.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marketing_attribution_models"
+version = "1.0.11"
+description = "Metodos de atribuicao de midia"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Andre Tocci", email = "andre.tocci@dp6.com.br" },
 ]
-version_source = 'tag'
-build_command = ""
+classifiers = [
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "numpy>=2.5",
+  "pandas>=3.0",
+  "matplotlib>=3.11",
+  "seaborn>=0.13.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/DP6/Marketing-Attribution-Models"
+Source = "https://github.com/DP6/Marketing-Attribution-Models"
+Documentation = "https://dp6.github.io/Marketing-Attribution-Models"
+
+[tool.setuptools]
+packages = ["marketing_attribution_models"]
+
+[tool.black]
+target-version = ["py314"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "master"
+version_source = "tag"
+build_command = "pip install build && python -m build"

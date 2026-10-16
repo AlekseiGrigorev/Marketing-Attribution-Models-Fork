@@ -12,6 +12,205 @@ import seaborn as sns
 plt.style.use("seaborn-v0_8-white")
 
 
+def _coalitions_matrix(msize, unique_channels, order=False):
+    """Матрица коалиций: строка — набор каналов, колонки — вхождение канала."""
+    channels_combination = []
+
+    # Creating a list with all the permutations if order is True
+    if order is True:
+        for size in range(0, msize + 1):
+            for subset in itertools.combinations(unique_channels, size):
+                channels_combination.append(list(subset))
+    else:
+        for size in range(0, msize + 1):
+            for subset in itertools.combinations(sorted(unique_channels), size):
+                channels_combination.append(list(subset))
+
+    # Creating a DF with the channels as the boolean columns
+    df_temp = pd.Series(channels_combination).to_frame(name="combinations")
+    for channel in unique_channels:
+        # pylint: disable=cell-var-from-loop
+        df_temp[channel] = df_temp.combinations.apply(
+            lambda channels: channel in channels
+        )
+
+    return df_temp
+
+
+def _shapley_model_name(size, order, values_col):
+    """Имя колонки результата — ровно как в MAM.attribution_shapley()."""
+    model_name = "attribution_shapley_size" + str(size) + "_" + values_col
+    model_type = "_algorithmic"
+    if order:
+        model_name = model_name + "_order" + model_type
+    else:
+        model_name = model_name + model_type
+    return model_name
+
+
+def _validate_conversion_table(conv_table, sep, order):
+    """Проверяет, что внешняя таблица конверсий пригодна для расчёта Шепли.
+
+    Ключ combinations должен быть каноническим набором каналов (уникальные каналы,
+    отсортированные как в journey_conversion_table). Иначе поиск v(S) не найдёт
+    коалицию, значение молча станет 0 и результат будет некорректным — поэтому
+    лучше упасть с понятной ошибкой.
+    """
+    if not isinstance(conv_table, pd.DataFrame):
+        raise ValueError("conv_table должен быть pandas.DataFrame")
+
+    required = {"combinations", "conversions", "total_sequences", "conversion_value"}
+    missing = required - set(conv_table.columns)
+    if missing:
+        raise ValueError(
+            "conv_table: отсутствуют обязательные колонки " + str(sorted(missing))
+        )
+    if conv_table["combinations"].duplicated().any():
+        raise ValueError(
+            "conv_table: колонка combinations должна быть уникальным ключом"
+        )
+    if (conv_table["total_sequences"] <= 0).any():
+        raise ValueError("conv_table: total_sequences должен быть больше 0")
+    if (conv_table["conversions"] > conv_table["total_sequences"]).any():
+        raise ValueError("conv_table: conversions не может превышать total_sequences")
+
+    def canonical(value):
+        parts = [part for part in str(value).split(sep) if part]
+        if order:
+            parts = list(dict.fromkeys(parts))
+        else:
+            parts = sorted(set(parts))
+        return sep.join(parts)
+
+    canonical_keys = conv_table["combinations"].apply(canonical)
+    broken = conv_table.loc[
+        canonical_keys != conv_table["combinations"], "combinations"
+    ]
+    if len(broken):
+        raise ValueError(
+            "conv_table: ключи combinations не каноничны (каналы должны быть "
+            "уникальны и отсортированы как в journey_conversion_table), примеры: "
+            + str(broken.head(3).tolist())
+        )
+
+
+def shapley_from_conversion_table(
+    conv_table,
+    sep=" > ",
+    size=4,
+    order=False,
+    values_col="conv_rate",
+    merge_custom_values=None,
+):
+    """Считает вектор Шепли по ГОТОВОЙ таблице конверсий.
+
+    Таблица должна быть в формате MAM.journey_conversion_table():
+    combinations | conversions | total_sequences | conversion_value | conv_rate.
+
+    Параметры size и order используются только для имени колонки-результата:
+    обрезка size в таблице должна быть уже применена (иначе будет двойная обрезка).
+
+    Returns:
+        (conv_table с колонкой результатов, имя колонки результатов)
+    """
+    _validate_conversion_table(conv_table, sep=sep, order=order)
+    conv_table = conv_table.copy()
+
+    # Merge merge_custom_values
+    if merge_custom_values is not None:
+        if not isinstance(merge_custom_values, pd.DataFrame):
+            print(
+                "Warning: variable merge_custom_values has to be a Pandas "
+                + "DataFrame containing two columns representing the channels "
+                + "combination and his conv value."
+            )
+        else:
+            merge_custom_values.columns = ["combinations", "custom_value"]
+            conv_table = pd.merge(
+                conv_table, merge_custom_values, on="combinations", how="left"
+            ).fillna(0)
+            values_col = "custom_value"
+
+    # Removing all jouneys that have not converted
+    conv_table = conv_table[conv_table.conversions > 0]
+    channels_shapley = conv_table.combinations.apply(lambda x: x.split(sep)).copy()
+    results = []
+
+    for journey in channels_shapley:
+        n = len(journey)
+
+        coalitions = _coalitions_matrix(n, journey, order=order)
+        coalitions.combinations = coalitions.combinations.apply(sep.join)
+        coa = (
+            coalitions[1:]
+            .drop("combinations", axis=1)
+            .astype(int)
+            .astype(float)
+            .reset_index(drop=True)
+        )
+
+        # Merging the coalitions table with the grouped results on conv_table
+        valores = (
+            pd.merge(coalitions, conv_table, on="combinations", how="left")[values_col]
+            .fillna(0)
+            .values
+        )
+
+        v = valores[1:]
+        coaux = coa.copy()
+
+        for line in list(range(0, ((2**n) - 1))):
+
+            for channel in coa.columns:
+                s = len(coaux.iloc[line, :][coaux.iloc[line, :] != 0])
+                if coa.at[line, channel] == 0:
+                    a = (
+                        -(math.factorial(s) * math.factorial(n - s - 1))
+                        / math.factorial(n)
+                        * v[line]
+                    )
+                    coa.loc[line, channel] = a
+                else:
+                    b = (
+                        (math.factorial(s - 1) * math.factorial(n - s))
+                        / math.factorial(n)
+                        * v[line]
+                    )
+                    coa.loc[line, channel] = b
+
+        results.append(list(coa.sum()))
+
+    model_name = _shapley_model_name(size=size, order=order, values_col=values_col)
+
+    if (values_col == "conv_rate") or (values_col == "custom_value"):
+        conv_table[model_name] = results
+        conv_table[model_name] = (
+            conv_table[model_name].apply(np.asarray) * conv_table["total_sequences"]
+        )
+        conv_table[model_name] = (
+            conv_table[model_name].apply(lambda x: x / x.sum())
+            * conv_table["conversion_value"]
+        )
+        conv_table[model_name] = conv_table[model_name].apply(lambda x: x.tolist())
+    else:
+        conv_table[model_name] = results
+
+    return conv_table, model_name
+
+
+def channel_values_from_conversion_table(conv_table, model_name, sep=" > "):
+    """Суммирует результат Шепли по уникальным каналам (Series: канал -> вес).
+
+    Соответствует поведению MAM.attribution_shapley(group_by_channels_models=True).
+    """
+    channels_list = sum(
+        conv_table.combinations.apply(lambda x: x.split(sep)).copy(), []
+    )
+    values_list = sum(conv_table[model_name].values, [])
+    frame = pd.DataFrame({"channels": channels_list, "value": values_list})
+    return frame.groupby(["channels"])["value"].sum()
+
+
 class MAM:
     """MAM (Marketing Attribution Models) is a class inspired on the R Package.
 
@@ -1452,27 +1651,7 @@ class MAM:
         """
         if unique_channels is None:
             unique_channels = list(set(sum(self.channels.values, [])))
-        channels_combination = []
-
-        # Creating a list with all the permutations if order is True
-        if order is True:
-            for size in range(0, msize + 1):
-                for subset in itertools.combinations(unique_channels, size):
-                    channels_combination.append(list(subset))
-        else:
-            for size in range(0, msize + 1):
-                for subset in itertools.combinations(sorted(unique_channels), size):
-                    channels_combination.append(list(subset))
-
-        # Creating a DF with the channels as the boolean columns
-        df_temp = pd.Series(channels_combination).to_frame(name="combinations")
-        for channel in unique_channels:
-            # pylint: disable=cell-var-from-loop
-            df_temp[channel] = df_temp.combinations.apply(
-                lambda channels: channel in channels
-            )
-
-        return df_temp
+        return _coalitions_matrix(msize, unique_channels, order=order)
 
     def attribution_shapley(
         self,
@@ -1512,119 +1691,69 @@ class MAM:
             Will aggregate the attributed results by each channel on
             self.group_by_channels_models.
         """
-
         # Creating conv_table that will contain the aggregated results based on the journeys
         conv_table = self.journey_conversion_table(order=order, size=size)
+        return self.attribution_shapley_from_conversion_table(
+            conv_table,
+            size=size,
+            order=order,
+            values_col=values_col,
+            merge_custom_values=merge_custom_values,
+            group_by_channels_models=group_by_channels_models,
+        )
 
-        # Merge merge_custom_values
-        if merge_custom_values is not None:
-            if not isinstance(merge_custom_values, pd.DataFrame):
-                print(
-                    "Warning: variable merge_custom_values has to be a Pandas "
-                    + "DataFrame containing two columns representing the channels "
-                    + "combination and his conv value."
-                )
-            else:
-                merge_custom_values.columns = ["combinations", "custom_value"]
-                conv_table = pd.merge(
-                    conv_table, merge_custom_values, on="combinations", how="left"
-                ).fillna(0)
-                values_col = "custom_value"
+    def attribution_shapley_from_conversion_table(
+        self,
+        conv_table,
+        size=4,
+        order=False,
+        values_col="conv_rate",
+        merge_custom_values=None,
+        group_by_channels_models=True,
+    ):
+        """Shapley по готовой таблице конверсий (без чтения исходных путешествий).
 
-        # Removing all jouneys that have not converted
-        conv_table = conv_table[conv_table.conversions > 0]
-        channels_shapley = conv_table.combinations.apply(
-            lambda x: x.split(self.sep)
-        ).copy()
-        results = []
+        Позволяет посчитать атрибуцию по таблице, собранной вне библиотеки
+        (например, стримингом из большой выгрузки или агрегацией в SQL), и не
+        держать в памяти исходные данные.
 
-        for journey in channels_shapley:
-            n = len(journey)
-
-            coalitions = self.coalitions(n, journey, order=order)
-            coalitions.combinations = coalitions.combinations.apply(self.sep.join)
-            coa = (
-                coalitions[1:]
-                .drop("combinations", axis=1)
-                .astype(int)
-                .astype(float)
-                .reset_index(drop=True)
-            )
-
-            # Merging the coalitions table with the grouped results on conv_table
-            valores = (
-                pd.merge(coalitions, conv_table, on="combinations", how="left")[
-                    values_col
-                ]
-                .fillna(0)
-                .values
-            )
-
-            v = valores[1:]
-            coaux = coa.copy()
-
-            for line in list(range(0, ((2**n) - 1))):
-
-                for channel in coa.columns:
-                    s = len(coaux.iloc[line, :][coaux.iloc[line, :] != 0])
-                    if coa.at[line, channel] == 0:
-                        a = (
-                            -(math.factorial(s) * math.factorial(n - s - 1))
-                            / math.factorial(n)
-                            * v[line]
-                        )
-                        coa.loc[line, channel] = a
-                    else:
-                        b = (
-                            (math.factorial(s - 1) * math.factorial(n - s))
-                            / math.factorial(n)
-                            * v[line]
-                        )
-                        coa.loc[line, channel] = b
-
-            results.append(list(coa.sum()))
-
-        # Model col_name
-        model_name = "attribution_shapley_size" + str(size) + "_" + values_col
-        model_type = "_algorithmic"
-        if order:
-            model_name = model_name + "_order" + model_type
-        else:
-            model_name = model_name + model_type
-
-        if (values_col == "conv_rate") or (values_col == "custom_value"):
-            conv_table[model_name] = results
-            conv_table[model_name] = (
-                conv_table[model_name].apply(np.asarray) * conv_table["total_sequences"]
-            )
-            conv_table[model_name] = (
-                conv_table[model_name].apply(lambda x: x / x.sum())
-                * conv_table["conversion_value"]
-            )
-            conv_table[model_name] = conv_table[model_name].apply(lambda x: x.tolist())
-        else:
-            conv_table[model_name] = results
-
-        ##########################
-        # group_by_channels_models#
-        ##########################
+        Parameters:
+        conv_table =
+            Таблица формата MAM.journey_conversion_table():
+            combinations | conversions | total_sequences | conversion_value | conv_rate.
+            Ключи combinations должны быть каноническими (см. валидацию), обрезка
+            size должна быть уже применена.
+        size, order =
+            Используются только для имени колонки-результата, должны совпадать с
+            параметрами, с которыми таблица была построена.
+        values_col =
+            Колонка таблицы, значения которой используются как v(S).
+        merge_custom_values, group_by_channels_models =
+            Как в attribution_shapley().
+        """
+        conv_table, model_name = shapley_from_conversion_table(
+            conv_table,
+            sep=self.sep,
+            size=size,
+            order=order,
+            values_col=values_col,
+            merge_custom_values=merge_custom_values,
+        )
 
         # Aggregating the results by unique channel
         if group_by_channels_models:
-            channels_list = sum(channels_shapley, [])
-            values_list = sum(conv_table[model_name].values, [])
-            frame = pd.DataFrame({"channels": channels_list, "value": values_list})
-            frame = frame.groupby(["channels"])["value"].sum()
+            frame = channel_values_from_conversion_table(
+                conv_table, model_name, sep=self.sep
+            )
+            frame = frame.reset_index()
+            frame.columns = ["channels", model_name]
 
             if isinstance(self.group_by_channels_models, pd.DataFrame):
-                frame = frame.reset_index()
-                frame.columns = ["channels", model_name]
                 self.group_by_channels_models = pd.merge(
                     self.group_by_channels_models, frame, how="outer", on=["channels"]
                 ).fillna(0)
             else:
-                self.group_by_channels_models = frame.reset_index()
-                self.group_by_channels_models.columns = ["channels", model_name]
+                self.group_by_channels_models = frame
         else:
             frame = "group_by_channels_models=False"
 

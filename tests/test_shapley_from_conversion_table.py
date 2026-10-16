@@ -16,7 +16,10 @@ They check:
    silently turning v(S) into 0);
 5. ``coalitions()`` still returns exactly the same matrix after the refactor,
    including exact membership for channel names where one is a substring of
-   another (``p_43`` vs ``p_430``).
+   another (``p_43`` vs ``p_430``);
+6. the MAM 1.0.x return contract of ``attribution_shapley()``: the second element
+   is a Series on the first call on a fresh object and a DataFrame once it is
+   merged into an existing ``group_by_channels_models`` table.
 """
 
 import pandas as pd
@@ -89,14 +92,6 @@ def _build_mam() -> MAM:
     )
 
 
-def _frame_to_dict(frame: pd.DataFrame) -> dict:
-    """Per-channel result of a (channels, value) frame: {channel: value}."""
-    return {
-        str(channel): float(value)
-        for channel, value in zip(frame.iloc[:, 0], frame.iloc[:, 1], strict=True)
-    }
-
-
 def _series_to_dict(series: pd.Series) -> dict:
     """Per-channel result of a Series: {channel: value}."""
     return {str(channel): float(value) for channel, value in series.items()}
@@ -116,7 +111,7 @@ def test_from_table_matches_attribution_shapley() -> None:
     """Table-based Shapley == classic Shapley on the same ready fixture."""
     mam = _build_mam()
     table = mam.journey_conversion_table(size=SIZE)
-    classic = _frame_to_dict(
+    classic = _series_to_dict(
         mam.attribution_shapley(size=SIZE, values_col="conv_rate")[1]
     )
 
@@ -135,7 +130,7 @@ def test_from_table_via_mam_method() -> None:
     """The new MAM method reproduces the classic call and names the column."""
     mam = _build_mam()
     table = mam.journey_conversion_table(size=SIZE)
-    classic = _frame_to_dict(
+    classic = _series_to_dict(
         _build_mam().attribution_shapley(size=SIZE, values_col="conv_rate")[1]
     )
 
@@ -143,7 +138,7 @@ def test_from_table_via_mam_method() -> None:
         table, size=SIZE, values_col="conv_rate"
     )
 
-    assert _frame_to_dict(frame) == pytest.approx(classic, rel=1e-9)
+    assert _series_to_dict(frame) == pytest.approx(classic, rel=1e-9)
     assert (
         f"attribution_shapley_size{SIZE}_conv_rate_algorithmic" in result_table.columns
     )
@@ -302,3 +297,54 @@ def test_coalitions_exact_membership_is_kept() -> None:
         ("p_430", "p_5"): (False, True, True),
         ("p_43", "p_430", "p_5"): (True, True, True),
     }
+
+
+def test_shapley_first_call_returns_series() -> None:
+    """Первый вызов на свежем MAM: второй элемент — Series (контракт MAM 1.0.x).
+
+    Именно этот контракт ломали, когда шаг reset_index() был вынесен из ветки
+    merge: тогда [1] всегда становился DataFrame и ломал внешний код, который
+    делает frame.reset_index().columns = ["channels", model_name].
+    """
+    mam = _build_mam()
+    _, frame = mam.attribution_shapley(size=SIZE, values_col="conv_rate")
+    model_name = f"attribution_shapley_size{SIZE}_conv_rate_algorithmic"
+
+    assert isinstance(frame, pd.Series)
+    assert frame.name == "value"
+    assert frame.index.name == "channels"
+
+    # Вызывающий код MAM 1.0.x делает так — это должно работать без ValueError.
+    renamed = frame.reset_index()
+    renamed.columns = ["channels", model_name]
+    assert list(renamed.columns) == ["channels", model_name]
+    assert isinstance(mam.group_by_channels_models, pd.DataFrame)
+
+
+def test_shapley_merges_into_existing_table_as_dataframe() -> None:
+    """Повторный вызов с уже заполненной таблицей: [1] — DataFrame, как и раньше."""
+    mam = _build_mam()
+    mam.attribution_first_click()
+    _, frame = mam.attribution_shapley(size=SIZE, values_col="conv_rate")
+    model_name = f"attribution_shapley_size{SIZE}_conv_rate_algorithmic"
+
+    assert isinstance(frame, pd.DataFrame)
+    assert list(frame.columns) == ["channels", model_name]
+    assert model_name in mam.group_by_channels_models.columns
+
+
+def test_from_table_keeps_the_same_contract() -> None:
+    """Новый table-based метод не меняет тип [1]: та же ветка кода, что и раньше."""
+    mam = _build_mam()
+    table = mam.journey_conversion_table(size=SIZE)
+    _, frame = mam.attribution_shapley_from_conversion_table(
+        table, size=SIZE, values_col="conv_rate"
+    )
+    model_name = f"attribution_shapley_size{SIZE}_conv_rate_algorithmic"
+
+    assert isinstance(frame, pd.Series)
+    assert list(frame.reset_index().columns) == ["channels", "value"]
+
+    renamed = frame.reset_index()
+    renamed.columns = ["channels", model_name]
+    assert list(renamed.columns) == ["channels", model_name]

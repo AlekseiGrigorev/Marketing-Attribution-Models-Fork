@@ -1740,20 +1740,24 @@ class MAM:
             merge_custom_values=merge_custom_values,
         )
 
-        # Aggregating the results by unique channel
+        # Aggregating the results by unique channel.
+        # Contract kept from MAM 1.0.x: the returned frame is a Series while
+        # self.group_by_channels_models is still empty (first call on a fresh object)
+        # and a DataFrame once it is merged into an existing table.
         if group_by_channels_models:
             frame = channel_values_from_conversion_table(
                 conv_table, model_name, sep=self.sep
             )
-            frame = frame.reset_index()
-            frame.columns = ["channels", model_name]
 
             if isinstance(self.group_by_channels_models, pd.DataFrame):
+                frame = frame.reset_index()
+                frame.columns = ["channels", model_name]
                 self.group_by_channels_models = pd.merge(
                     self.group_by_channels_models, frame, how="outer", on=["channels"]
                 ).fillna(0)
             else:
-                self.group_by_channels_models = frame
+                self.group_by_channels_models = frame.reset_index()
+                self.group_by_channels_models.columns = ["channels", model_name]
         else:
             frame = "group_by_channels_models=False"
 
